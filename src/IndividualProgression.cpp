@@ -143,6 +143,12 @@ void IndividualProgression::AdjustStats(Player* player, float computedAdjustment
     player->CastCustomSpell(player, ABSORB_SPELL, &bp1, nullptr, nullptr, false);
 }
 
+float IndividualProgression::ComputeVanillaAdjustment(uint8 playerLevel, float configAdjustmentValue)
+{
+    float adjustmentApplyPercent = (float(playerLevel) - 10.0f) / 50.0f;
+    return playerLevel > 10 ? 1.0f - ((1.0f - configAdjustmentValue) * adjustmentApplyPercent) : 1;
+}
+
 /**
  * Gets the highest progression level achieved by an account
  * Note that this method makes a direct, non-sync DB call and should be used sparingly
@@ -308,6 +314,7 @@ private:
         sIndividualProgression->deathKnightStartingProgression = sConfigMgr->GetOption<uint8>("IndividualProgression.DeathKnightStartingProgression", 11);
         sIndividualProgression->LoadCustomProgressionEntries(sConfigMgr->GetOption<std::string>("IndividualProgression.CustomProgression", ""));
         sIndividualProgression->earlyDungeonSet2 = sConfigMgr->GetOption<bool>("IndividualProgression.AllowEarlyDungeonSet2", true);
+        sIndividualProgression->pvpGearRequirements = sConfigMgr->GetOption<bool>("IndividualProgression.PvPGearRequirements", true);
     }
 
     static void LoadXpValues()

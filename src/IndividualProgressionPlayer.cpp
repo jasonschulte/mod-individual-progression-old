@@ -29,24 +29,27 @@ public:
         sIndividualProgression->CheckAdjustments(player);
     }
 
-    // Waiting for PR: https://github.com/azerothcore/azerothcore-wotlk/pull/13046
-//    void OnSetMaxLevel(Player* player, uint32& maxPlayerLevel) override
-//    {
-//        if (!sIndividualProgression->hasPassedProgression(player, PROGRESSION_NAXX40))
-//        {
-//            if (sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL) > 60)
-//            {
-//                maxPlayerLevel = 60;
-//            }
-//        }
-//        else if (!sIndividualProgression->hasPassedProgression(player, PROGRESSION_TBC_TIER_5))
-//        {
-//            if (sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL) > 70)
-//            {
-//                maxPlayerLevel = 70;
-//            }
-//        }
-//    }
+    void OnSetMaxLevel(Player* player, uint32& maxPlayerLevel) override
+    {
+        if (!sIndividualProgression->enabled)
+        {
+            return;
+        }
+        if (!sIndividualProgression->hasPassedProgression(player, PROGRESSION_NAXX40))
+        {
+            if (sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL) > 60)
+            {
+                maxPlayerLevel = 60;
+            }
+        }
+        else if (!sIndividualProgression->hasPassedProgression(player, PROGRESSION_TBC_TIER_5))
+        {
+            if (sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL) > 70)
+            {
+                maxPlayerLevel = 70;
+            }
+        }
+    }
 
     void OnMapChanged(Player* player) override
     {
@@ -139,11 +142,19 @@ public:
         // Player is still in Vanilla content - do not give XP past level 60
         if (!sIndividualProgression->hasPassedProgression(player, PROGRESSION_NAXX40) && player->getLevel() >= 60)
         {
+            // Still award XP to pets - they won't be able to pass the player's level
+            Pet* pet = player->GetPet();
+            if (pet && xpSource == XPSOURCE_KILL)
+                pet->GivePetXP(player->GetGroup() ? amount / 2 : amount);
             amount = 0;
         }
             // Player is in TBC content - do not give XP past level 70
         else if (!sIndividualProgression->hasPassedProgression(player, PROGRESSION_TBC_TIER_5) && player->getLevel() >= 70)
         {
+            // Still award XP to pets - they won't be able to pass the player's level
+            Pet* pet = player->GetPet();
+            if (pet && xpSource == XPSOURCE_KILL)
+                pet->GivePetXP(player->GetGroup() ? amount / 2 : amount);
             amount = 0;
         }
     }
@@ -350,6 +361,75 @@ public:
             rDungeonId = RDF_THE_BURNING_CRUSADE_HEROIC;
         }
     }
+
+    bool CanEquipItem(Player* player, uint8 /*slot*/, uint16& /*dest*/, Item* pItem, bool /*swap*/, bool /*not_loading*/) override
+    {
+        if (sIndividualProgression->pvpGearRequirements)
+        {
+            switch (pItem->GetTemplate()->RequiredHonorRank)
+            {
+                case 5:
+                    if (!(player->HasTitle(PRIVATE) || player->HasTitle(SCOUT)))
+                        return false;
+                    break;
+                case 6:
+                    if (!(player->HasTitle(CORPORAL) || player->HasTitle(GRUNT)))
+                        return false;
+                    break;
+                case 7:
+                    if (!(player->HasTitle(SERGEANT) || player->HasTitle(SERGEANT_H)))
+                        return false;
+                    break;
+                case 8:
+                    if (!(player->HasTitle(MASTER_SERGEANT) || player->HasTitle(SENIOR_SERGEANT)))
+                        return false;
+                    break;
+                case 9:
+                    if (!(player->HasTitle(SERGEANT_MAJOR) || player->HasTitle(FIRST_SERGEANT)))
+                        return false;
+                    break;
+                case 10:
+                    if (!(player->HasTitle(KNIGHT) || player->HasTitle(STONE_GUARD)))
+                        return false;
+                    break;
+                case 11:
+                    if (!(player->HasTitle(KNIGHT_LIEUTENANT) || player->HasTitle(BLOOD_GUARD)))
+                        return false;
+                    break;
+                case 12:
+                    if (!(player->HasTitle(KNIGHT_CAPTAIN) || player->HasTitle(LEGIONNAIRE)))
+                        return false;
+                    break;
+                case 13:
+                    if (!(player->HasTitle(KNIGHT_CHAMPION) || player->HasTitle(CENTURION)))
+                        return false;
+                    break;
+                case 14:
+                    if (!(player->HasTitle(LIEUTENANT_COMMANDER) || player->HasTitle(CHAMPION)))
+                        return false;
+                    break;
+                case 15:
+                    if (!(player->HasTitle(COMMANDER) || player->HasTitle(LIEUTENANT_GENERAL)))
+                        return false;
+                    break;
+                case 16:
+                    if (!(player->HasTitle(MARSHAL) || player->HasTitle(GENERAL)))
+                        return false;
+                    break;
+                case 17:
+                    if (!(player->HasTitle(FIELD_MARSHAL) || player->HasTitle(WARLORD)))
+                        return false;
+                    break;
+                case 18:
+                    if (!(player->HasTitle(GRAND_MARSHAL) || player->HasTitle(HIGH_WARLORD)))
+                        return false;
+                    break;
+                default:
+                    break;
+            }
+        }
+        return true;
+    }
 };
 
 class IndividualPlayerProgression_AccountScript: public AccountScript
@@ -475,12 +555,17 @@ public:
     void ModifyHealReceived(Unit* /*target*/, Unit *healer, uint32 &heal, SpellInfo const *spellInfo) override
     {
         // Skip potions, bandages, percentage based heals like Rune Tap, etc.
-        if (spellInfo->HasAttribute(SPELL_ATTR0_NO_IMMUNITIES) || spellInfo->Mechanic == MECHANIC_BANDAGE || spellInfo->Id == SPELL_RUNE_TAP)
+        if (!sIndividualProgression->enabled || spellInfo->HasAttribute(SPELL_ATTR0_NO_IMMUNITIES) || spellInfo->Mechanic == MECHANIC_BANDAGE)
         {
             return;
         }
 
-        // NPCBots Compatibility - healer may be null
+        // Skip percentage based heals or spells already nerfed by damage reduction
+        if (spellInfo->Id == SPELL_RUNE_TAP || spellInfo->Id == SPELL_LIFE_STEAL)
+        {
+            return;
+        }
+
         if (!healer)
             return;
 
@@ -493,7 +578,7 @@ public:
         float gearAdjustment = computeTotalGearTuning(player);
         if (!sIndividualProgression->hasPassedProgression(player, PROGRESSION_NAXX40))
         {
-            heal *= (sIndividualProgression->vanillaHealingAdjustment - gearAdjustment);
+            heal *= (sIndividualProgression->ComputeVanillaAdjustment(player->getLevel(), sIndividualProgression->vanillaHealingAdjustment) - gearAdjustment);
         }
         else if (!sIndividualProgression->hasPassedProgression(player, PROGRESSION_TBC_TIER_5))
         {
@@ -507,10 +592,8 @@ public:
 
     void ModifySpellDamageTaken(Unit* /*target*/, Unit* attacker, int32& damage, SpellInfo const* spellInfo) override
     {
-        // NPCBots Compatibility - attacker may be null
-        if (!attacker)
+        if (!sIndividualProgression->enabled || !attacker)
             return;
-
         bool isPet = attacker->GetOwner() && attacker->GetOwner()->GetTypeId() == TYPEID_PLAYER;
         if (!isPet && attacker->GetTypeId() != TYPEID_PLAYER)
         {
@@ -520,7 +603,7 @@ public:
         float gearAdjustment = computeTotalGearTuning(player);
         if (!sIndividualProgression->hasPassedProgression(player, PROGRESSION_NAXX40))
         {
-            damage *= (sIndividualProgression->vanillaPowerAdjustment - gearAdjustment);
+            damage *= (sIndividualProgression->ComputeVanillaAdjustment(player->getLevel(), sIndividualProgression->vanillaPowerAdjustment) - gearAdjustment);
         }
         else if (!sIndividualProgression->hasPassedProgression(player, PROGRESSION_TBC_TIER_5))
         {
@@ -534,8 +617,7 @@ public:
 
     void ModifyMeleeDamage(Unit* /*target*/, Unit* attacker, uint32& damage) override
     {
-        // NPCBots Compatibility - attacker may be null
-        if (!attacker)
+        if (!sIndividualProgression->enabled || !attacker)
             return;
 
         bool isPet = attacker->GetOwner() && attacker->GetOwner()->GetTypeId() == TYPEID_PLAYER;
@@ -547,7 +629,7 @@ public:
         float gearAdjustment = computeTotalGearTuning(player);
         if (!sIndividualProgression->hasPassedProgression(player, PROGRESSION_NAXX40))
         {
-            damage *= (sIndividualProgression->vanillaPowerAdjustment - gearAdjustment);
+            damage *= (sIndividualProgression->ComputeVanillaAdjustment(player->getLevel(), sIndividualProgression->vanillaPowerAdjustment) - gearAdjustment);
         }
         else if (!sIndividualProgression->hasPassedProgression(player, PROGRESSION_TBC_TIER_5))
         {
@@ -558,7 +640,32 @@ public:
             damage *= 1.0f - gearAdjustment;
         }
     }
-};
+
+    void ModifyPeriodicDamageAurasTick(Unit* /*target*/, Unit* attacker, uint32& damage, SpellInfo const* /*spellInfo*/) override
+    {
+        if (!sIndividualProgression->enabled || !attacker)
+            return;
+
+        bool isPet = attacker->GetOwner() && attacker->GetOwner()->GetTypeId() == TYPEID_PLAYER;
+        if (!isPet && attacker->GetTypeId() != TYPEID_PLAYER)
+        {
+            return;
+        }
+        Player* player = isPet ? attacker->GetOwner()->ToPlayer() : attacker->ToPlayer();
+        float gearAdjustment = computeTotalGearTuning(player);
+        if (!sIndividualProgression->hasPassedProgression(player, PROGRESSION_NAXX40))
+        {
+            damage *= (sIndividualProgression->ComputeVanillaAdjustment(player->getLevel(), sIndividualProgression->vanillaPowerAdjustment) - gearAdjustment);
+        }
+        else if (!sIndividualProgression->hasPassedProgression(player, PROGRESSION_TBC_TIER_5))
+        {
+            damage *= (sIndividualProgression->tbcPowerAdjustment - gearAdjustment);
+        }
+        else
+        {
+            damage *= 1.0f - gearAdjustment;
+        }
+    }};
 
 void AddSC_mod_individual_progression_player()
 {
